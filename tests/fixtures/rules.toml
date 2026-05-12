@@ -1,0 +1,25 @@
+[[rules]]
+name = "KernelError"
+description = "Detects kernel error messages"
+severity = "Critical"
+match_type = "regex"
+expression = "kernel:.*error"
+count_threshold = 1
+
+[[rules]]
+name = "SlowQuery"
+description = "Detects slow database queries"
+severity = "Warning"
+match_type = "keyword"
+expression = "slow query"
+count_threshold = 2
+
+[[rules]]
+name = "HttpStatus500"
+description = "HTTP 500 errors"
+severity = "Critical"
+match_type = "field"
+field = "status"
+condition = "equals"
+value = "500"
+count_threshold = 1
