@@ -1,0 +1,30 @@
+# log-analyze configuration
+# Copy to one of these locations (higher priority overwrites lower):
+#   ./log-analyze.toml
+#   ~/.config/log-analyze/config.toml
+#   /etc/log-analyze/config.toml
+
+[general]
+default_format = "terminal"   # terminal | json | pipe
+threads = 4
+sample_lines = 10
+quiet = false
+
+[detection]
+anomaly_threshold = 1.5
+# rules = ["custom-rules.toml"]
+
+# LLM integration (requires --features llm)
+# Enable via config file or --llm CLI flag
+# API key priority: config file > LOG_ANALYZE_API_KEY > ANTHROPIC_API_KEY / OPENAI_API_KEY
+[llm]
+enabled = false
+# api_key = "sk-..."
+model = "claude-sonnet-4-6"
+base_url = "https://api.anthropic.com"
+language = "en"    # en | zh | ja | ko | fr | de | es | pt | ru
+
+# For Ollama / local models, use:
+# model = "qwen2.5:14b"
+# base_url = "http://localhost:11434"
+# api_key = "unused"

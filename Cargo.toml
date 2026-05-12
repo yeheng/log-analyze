@@ -21,9 +21,9 @@ anyhow = "1"
 thiserror = "2"
 once_cell = "1"
 dirs-next = "2"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
-tokio = { version = "1", features = ["rt", "macros"], optional = true }
+rig-core = { version = "0.35", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 
 [features]
 default = []
-llm = ["reqwest", "tokio"]
+llm = ["rig-core", "tokio"]
