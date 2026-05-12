@@ -111,7 +111,15 @@ fn config_paths() -> Vec<std::path::PathBuf> {
 }
 
 /// Load config by merging from lowest to highest priority files.
-/// Each higher-priority file replaces entire sub-sections.
+///
+/// Merge strategy: **section-replace**, not field-merge.
+/// A higher-priority file replaces an entire sub-section (e.g. `[general]`),
+/// so any fields not specified in that section revert to their defaults.
+///
+/// Search paths (lowest → highest priority):
+///   1. /etc/log-analyze/config.toml
+///   2. ~/.config/log-analyze/config.toml
+///   3. ./log-analyze.toml
 pub fn load_config() -> Result<Config, AppError> {
     let mut config = Config::default();
 
@@ -152,5 +160,22 @@ pub fn apply_overrides(config: &mut Config, cli: &crate::cli::Cli) {
     }
     if let Some(rules) = &cli.rules {
         config.detection.rules = rules.clone();
+    }
+
+    #[cfg(feature = "llm")]
+    {
+        if cli.llm {
+            config.llm.enabled = true;
+        }
+        if let Some(ref lang) = cli.lang {
+            config.llm.language = lang.clone();
+        }
+    }
+
+    #[cfg(not(feature = "llm"))]
+    {
+        if cli.llm {
+            eprintln!("Warning: --llm requires the 'llm' feature. Reinstall with --features llm.");
+        }
     }
 }

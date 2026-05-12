@@ -47,41 +47,48 @@ fn get_sink(format: &str) -> Box<dyn Sink> {
     }
 }
 
+fn load_patterns_from_paths(
+    paths: &[String],
+) -> anyhow::Result<Vec<Box<dyn log_analyze::core::pattern::Pattern>>> {
+    use log_analyze::patterns::custom::load_rules;
+
+    let mut patterns = Vec::new();
+    for path in paths {
+        let custom = load_rules(Path::new(path))
+            .map_err(|e| anyhow::anyhow!("Failed to load rules '{}': {}", path, e))?;
+        patterns.extend(custom);
+    }
+    Ok(patterns)
+}
+
 fn collect_patterns(
     cli: &Cli,
     cfg: &config::Config,
 ) -> anyhow::Result<Vec<Box<dyn log_analyze::core::pattern::Pattern>>> {
     use log_analyze::patterns::builtin::all_builtin_patterns;
-    use log_analyze::patterns::custom::load_rules;
 
     let mut patterns = all_builtin_patterns();
 
-    // Load custom rules from config
-    for rule_path in &cfg.detection.rules {
-        let custom = load_rules(Path::new(rule_path))
-            .map_err(|e| anyhow::anyhow!("Failed to load rules '{}': {}", rule_path, e))?;
-        patterns.extend(custom);
+    patterns.extend(load_patterns_from_paths(&cfg.detection.rules)?);
+    if let Some(p) = &cli.patterns {
+        patterns.extend(load_patterns_from_paths(p)?);
     }
-
-    // Load custom rules from CLI --patterns
-    if let Some(cli_patterns) = &cli.patterns {
-        for rule_path in cli_patterns {
-            let custom = load_rules(Path::new(rule_path))
-                .map_err(|e| anyhow::anyhow!("Failed to load patterns '{}': {}", rule_path, e))?;
-            patterns.extend(custom);
-        }
-    }
-
-    // Load custom rules from CLI --rules
-    if let Some(cli_rules) = &cli.rules {
-        for rule_path in cli_rules {
-            let custom = load_rules(Path::new(rule_path))
-                .map_err(|e| anyhow::anyhow!("Failed to load rules '{}': {}", rule_path, e))?;
-            patterns.extend(custom);
-        }
+    if let Some(r) = &cli.rules {
+        patterns.extend(load_patterns_from_paths(r)?);
     }
 
     Ok(patterns)
+}
+
+fn run_analysis(
+    cli: &Cli,
+    cfg: &config::Config,
+    path: &Path,
+    sample_lines: usize,
+) -> anyhow::Result<log_analyze::core::types::AnalysisReport> {
+    let patterns = collect_patterns(cli, cfg)?;
+    log_analyze::analyzer::engine::analyze_file(path, patterns, sample_lines)
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 fn analyze_command(
@@ -90,13 +97,17 @@ fn analyze_command(
     path: &Path,
     sample_lines: usize,
 ) -> anyhow::Result<()> {
-    let patterns = collect_patterns(cli, cfg)?;
-    let report = log_analyze::analyzer::engine::analyze_file(path, patterns, sample_lines)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let report = run_analysis(cli, cfg, path, sample_lines)?;
 
     let format = cli.format.as_deref().unwrap_or("terminal");
     let sink = get_sink(format);
     sink.write(&report)?;
+
+    #[cfg(feature = "llm")]
+    if cfg.llm.enabled {
+        print_llm_analysis(&cfg.llm, &report)?;
+    }
+
     Ok(())
 }
 
@@ -135,15 +146,45 @@ fn report_command(
     path: &Path,
     sample_lines: usize,
 ) -> anyhow::Result<()> {
-    let patterns = collect_patterns(cli, cfg)?;
-    let report = log_analyze::analyzer::engine::analyze_file(path, patterns, sample_lines)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let report = run_analysis(cli, cfg, path, sample_lines)?;
 
-    // Write to output file
     let output_path = cli.output.as_deref().unwrap_or("report.txt");
     let json = serde_json::to_string_pretty(&report)?;
-
     std::fs::write(output_path, json)?;
     println!("Report written to {}", output_path);
+
+    #[cfg(feature = "llm")]
+    if cfg.llm.enabled {
+        print_llm_analysis(&cfg.llm, &report)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "llm")]
+fn print_llm_analysis(
+    llm_config: &log_analyze::config::LlmConfig,
+    report: &log_analyze::core::types::AnalysisReport,
+) -> anyhow::Result<()> {
+    use colored::Colorize;
+
+    let report_json = serde_json::to_string_pretty(report)?;
+
+    println!();
+    println!("{}", "=== LLM Analysis ===".cyan().bold());
+    println!("Asking {} (this may take a moment)...", llm_config.model);
+    println!();
+
+    match log_analyze::llm::analyze_with_llm(llm_config, &report_json) {
+        Ok(response) => {
+            println!("{}", response);
+            println!();
+        }
+        Err(e) => {
+            eprintln!("{} LLM analysis failed: {}", "Warning:".yellow().bold(), e);
+            eprintln!("Rule-engine results above are still valid.");
+        }
+    }
+
     Ok(())
 }

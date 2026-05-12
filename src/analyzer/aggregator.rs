@@ -11,17 +11,23 @@ const MAX_SAMPLES_PER_PATTERN: usize = 50;
 const SPIKE_WINDOW_SECS: i64 = 60;
 
 // ---------------------------------------------------------------------------
+// Per-pattern state (replaces four parallel HashMaps)
+// ---------------------------------------------------------------------------
+
+struct PatternState {
+    count: u64,
+    first_seen: Option<DateTime<Utc>>,
+    last_seen: Option<DateTime<Utc>>,
+    samples: Vec<LogEntry>,
+}
+
+// ---------------------------------------------------------------------------
 // Aggregator
 // ---------------------------------------------------------------------------
 
 pub struct Aggregator {
     patterns: Vec<Box<dyn Pattern>>,
-
-    // Per-pattern counters.
-    pattern_counts: HashMap<String, u64>,
-    pattern_first: HashMap<String, Option<DateTime<Utc>>>,
-    pattern_last: HashMap<String, Option<DateTime<Utc>>>,
-    pattern_samples: HashMap<String, Vec<LogEntry>>,
+    pattern_states: HashMap<String, PatternState>,
 
     // Level distribution.
     level_counts: HashMap<LogLevel, u64>,
@@ -50,24 +56,19 @@ pub struct Aggregator {
 
 impl Aggregator {
     pub fn new(patterns: Vec<Box<dyn Pattern>>) -> Self {
-        let mut pattern_counts = HashMap::new();
-        let mut pattern_first = HashMap::new();
-        let mut pattern_last = HashMap::new();
-        let mut pattern_samples = HashMap::new();
+        let mut pattern_states = HashMap::new();
         for p in &patterns {
-            let name = p.name().to_string();
-            pattern_counts.insert(name.clone(), 0);
-            pattern_first.insert(name.clone(), None);
-            pattern_last.insert(name.clone(), None);
-            pattern_samples.insert(name, Vec::new());
+            pattern_states.insert(p.name().to_string(), PatternState {
+                count: 0,
+                first_seen: None,
+                last_seen: None,
+                samples: Vec::new(),
+            });
         }
 
         Self {
             patterns,
-            pattern_counts,
-            pattern_first,
-            pattern_last,
-            pattern_samples,
+            pattern_states,
             level_counts: HashMap::new(),
             window: VecDeque::new(),
             window_error_count: 0,
@@ -161,33 +162,28 @@ impl Aggregator {
 
     /// Increment pattern match stats and optionally sample the entry.
     fn record_match(&mut self, pattern_name: &str, entry: &LogEntry) {
-        let count = self
-            .pattern_counts
+        let state = self
+            .pattern_states
             .entry(pattern_name.to_string())
-            .or_insert(0);
-        *count += 1;
+            .or_insert_with(|| PatternState {
+                count: 0,
+                first_seen: None,
+                last_seen: None,
+                samples: Vec::new(),
+            });
 
-        let first = self
-            .pattern_first
-            .entry(pattern_name.to_string())
-            .or_insert(None);
-        if first.is_none() || entry.timestamp.map_or(false, |ts| Some(ts) < *first) {
-            *first = entry.timestamp;
+        state.count += 1;
+
+        if state.first_seen.is_none() || entry.timestamp.map_or(false, |ts| Some(ts) < state.first_seen) {
+            state.first_seen = entry.timestamp;
         }
 
-        let last = self
-            .pattern_last
-            .entry(pattern_name.to_string())
-            .or_insert(None);
-        if entry.timestamp.map_or(true, |ts| Some(ts) >= *last) {
-            *last = entry.timestamp;
+        if entry.timestamp.map_or(true, |ts| Some(ts) >= state.last_seen) {
+            state.last_seen = entry.timestamp;
         }
 
-        // Sample up to MAX_SAMPLES_PER_PATTERN.
-        if let Some(samples) = self.pattern_samples.get_mut(pattern_name) {
-            if samples.len() < MAX_SAMPLES_PER_PATTERN {
-                samples.push(entry.clone());
-            }
+        if state.samples.len() < MAX_SAMPLES_PER_PATTERN {
+            state.samples.push(entry.clone());
         }
     }
 
@@ -264,9 +260,11 @@ impl Aggregator {
         let mut stats = HashMap::new();
         for pattern in &self.patterns {
             let name = pattern.name().to_string();
-            let count = self.pattern_counts.get(&name).copied().unwrap_or(0);
-            let first = self.pattern_first.get(&name).and_then(|t| *t);
-            let last = self.pattern_last.get(&name).and_then(|t| *t);
+            let state = self.pattern_states.get(&name);
+
+            let count = state.map_or(0, |s| s.count);
+            let first = state.and_then(|s| s.first_seen);
+            let last = state.and_then(|s| s.last_seen);
 
             let rate_per_minute = if let (Some(f), Some(l)) = (first, last) {
                 let secs = (l - f).num_seconds().max(1) as f64;
@@ -291,13 +289,8 @@ impl Aggregator {
     /// Take all accumulated samples, leaving empty vectors behind.
     pub fn take_samples(&mut self) -> HashMap<String, Vec<LogEntry>> {
         let mut out = HashMap::new();
-        for (k, v) in self.pattern_samples.drain() {
-            out.insert(k, v);
-        }
-        // Re-initialize so we don't panic if called again.
-        for pattern in &self.patterns {
-            self.pattern_samples
-                .insert(pattern.name().to_string(), Vec::new());
+        for (name, state) in &mut self.pattern_states {
+            out.insert(name.clone(), std::mem::take(&mut state.samples));
         }
         out
     }
